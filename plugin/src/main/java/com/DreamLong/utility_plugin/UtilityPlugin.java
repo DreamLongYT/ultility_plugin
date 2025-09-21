@@ -17,6 +17,7 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.Location;
+import org.bukkit.configuration.ConfigurationSection;
 
 import java.io.File;
 import java.io.FileReader;
@@ -35,10 +36,6 @@ import java.util.Base64;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
-import org.json.simple.JSONObject;
-import org.json.simple.parser.JSONParser;
-import org.json.simple.parser.ParseException;
-
 /**
  * A Minecraft plugin that requires players to log in before they can
  * access certain utility commands. All command logic is contained within
@@ -50,22 +47,16 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
     private final Map<UUID, PlayerData> playersData = new HashMap<>();
     private final Map<UUID, BukkitTask> loginTasks = new HashMap<>();
     private final Map<UUID, Location> lastKnownLocations = new HashMap<>();
-    private File dataFolder;
 
     private final String prefix = ChatColor.GRAY + "[" + ChatColor.AQUA + "Utility" + ChatColor.GRAY + "] " + ChatColor.RESET;
     private static final SimpleDateFormat dateFormat = new SimpleDateFormat("ss/HH/dd/yyyy");
 
     @Override
     public void onEnable() {
-        // Create the plugin data folder if it doesn't exist
-        this.dataFolder = new File(getDataFolder(), "ultility_plugin");
-        if (!this.dataFolder.exists()) {
-            this.dataFolder.mkdirs();
-        }
-        loadAllData();
-        
-        // Load the default config.yml
+        // This is the line that automatically handles the config file
         this.saveDefaultConfig();
+        
+        loadAllData();
 
         // Register this class as a listener for events
         Bukkit.getPluginManager().registerEvents(this, this);
@@ -106,38 +97,32 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
     }
     
     public void loadAllData() {
-        File[] playerFiles = dataFolder.listFiles((dir, name) -> name.endsWith(".json"));
-        if (playerFiles == null) {
-            getLogger().info("No player data files found.");
+        ConfigurationSection playersSection = getConfig().getConfigurationSection("players");
+        if (playersSection == null) {
+            getLogger().info("No player data found in config.yml. Initializing empty data.");
             return;
         }
 
-        JSONParser parser = new JSONParser();
-        for (File file : playerFiles) {
-            try (FileReader reader = new FileReader(file)) {
-                JSONObject data = (JSONObject) parser.parse(reader);
-                String uuidString = file.getName().replace(".json", "");
+        for (String uuidString : playersSection.getKeys(false)) {
+            try {
                 UUID playerUUID = UUID.fromString(uuidString);
-
-                PlayerData playerData = new PlayerData();
-                playerData.username = (String) data.get("Username");
-                playerData.passwordHash = (String) data.get("Password");
-                
-                playerData.warns = (long) data.getOrDefault("Warns", 0L);
-                playerData.startWarns = (String) data.get("StartWarns");
-                
-                playerData.mutes = (long) data.getOrDefault("Mutes", 0L);
-                playerData.startMutes = (String) data.get("StartMutes");
-
-                playerData.ban = (long) data.getOrDefault("Ban", 0L);
-                playerData.startBans = (String) data.get("StartBans");
-
-                // New field for login attempts
-                playerData.loginAttempts = (long) data.getOrDefault("LoginAttempts", 0L);
-                
-                playersData.put(playerUUID, playerData);
-            } catch (IOException | ParseException e) {
-                getLogger().warning("Failed to load data from file " + file.getName() + ": " + e.getMessage());
+                ConfigurationSection playerDataSection = playersSection.getConfigurationSection(uuidString);
+                if (playerDataSection != null) {
+                    PlayerData playerData = new PlayerData();
+                    playerData.username = playerDataSection.getString("username");
+                    playerData.passwordHash = playerDataSection.getString("passwordHash");
+                    playerData.warns = playerDataSection.getLong("warns", 0);
+                    playerData.startWarns = playerDataSection.getString("startWarns");
+                    playerData.mutes = playerDataSection.getLong("mutes", 0);
+                    playerData.startMutes = playerDataSection.getString("startMutes");
+                    playerData.ban = playerDataSection.getLong("ban", 0);
+                    playerData.startBans = playerDataSection.getString("startBans");
+                    playerData.loginAttempts = playerDataSection.getLong("loginAttempts", 0);
+                    
+                    playersData.put(playerUUID, playerData);
+                }
+            } catch (IllegalArgumentException e) {
+                getLogger().warning("Invalid UUID found in config.yml: " + uuidString);
             }
         }
         getLogger().info("Successfully loaded data for " + playersData.size() + " players.");
@@ -147,6 +132,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
         for (UUID uuid : playersData.keySet()) {
             savePlayerData(uuid);
         }
+        saveConfig();
     }
     
     public void savePlayerData(UUID uuid) {
@@ -155,24 +141,17 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             return;
         }
         
-        File playerFile = new File(dataFolder, uuid.toString() + ".json");
-        JSONObject data = new JSONObject();
-        data.put("Username", playerData.username);
-        data.put("Password", playerData.passwordHash);
-        data.put("Warns", playerData.warns);
-        data.put("StartWarns", playerData.startWarns);
-        data.put("Mutes", playerData.mutes);
-        data.put("StartMutes", playerData.startMutes);
-        data.put("Ban", playerData.ban);
-        data.put("StartBans", playerData.startBans);
-        data.put("LoginAttempts", playerData.loginAttempts); // Save login attempts
-
-        try (FileWriter fileWriter = new FileWriter(playerFile)) {
-            fileWriter.write(data.toJSONString());
-            fileWriter.flush();
-        } catch (IOException e) {
-            getLogger().warning("Failed to save data for player " + playerData.username + ": " + e.getMessage());
-        }
+        // Use a ConfigurationSection to save the player's data
+        ConfigurationSection playerSection = getConfig().createSection("players." + uuid.toString());
+        playerSection.set("username", playerData.username);
+        playerSection.set("passwordHash", playerData.passwordHash);
+        playerSection.set("warns", playerData.warns);
+        playerSection.set("startWarns", playerData.startWarns);
+        playerSection.set("mutes", playerData.mutes);
+        playerSection.set("startMutes", playerData.startMutes);
+        playerSection.set("ban", playerData.ban);
+        playerSection.set("startBans", playerData.startBans);
+        playerSection.set("loginAttempts", playerData.loginAttempts);
     }
 
     private Location getLoginLocation() {
@@ -377,6 +356,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             playerData.passwordHash = passwordHash;
             playerData.loginAttempts = 0; // Reset login attempts on successful registration
             savePlayerData(player.getUniqueId());
+            saveConfig();
             
             player.sendMessage(prefix + ChatColor.GREEN + "You have successfully registered!");
             player.sendMessage(prefix + ChatColor.GREEN + "You can now log in with " + ChatColor.GOLD + "/login <password>" + ChatColor.GREEN + ".");
@@ -428,6 +408,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                 // Reset login attempts on successful login
                 playerData.loginAttempts = 0;
                 savePlayerData(player.getUniqueId());
+                saveConfig();
                 player.sendMessage(prefix + ChatColor.GREEN + "You have successfully logged in!");
                 player.sendMessage(prefix + ChatColor.GREEN + "You can now use other commands.");
                 
@@ -446,6 +427,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             } else {
                 playerData.loginAttempts++; // Increment attempt on incorrect password
                 savePlayerData(player.getUniqueId());
+                saveConfig();
                 player.sendMessage(prefix + ChatColor.RED + "Incorrect password.");
             }
             
@@ -512,6 +494,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                 }
             }
             savePlayerData(target.getUniqueId());
+            saveConfig();
             return true;
         }
     }
@@ -650,6 +633,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                 }
             }
             savePlayerData(target.getUniqueId());
+            saveConfig();
             return true;
         }
     }
@@ -693,6 +677,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             target.sendMessage(prefix + ChatColor.RED + "You have been warned by a staff member. Total warnings: " + targetData.warns);
             
             savePlayerData(target.getUniqueId());
+            saveConfig();
             return true;
         }
     }
@@ -740,6 +725,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                      ((Player) target).sendMessage(prefix + ChatColor.GREEN + "A staff member has removed one of your warnings. New total warnings: " + targetData.warns);
                 }
                 savePlayerData(target.getUniqueId());
+                saveConfig();
             } else {
                 player.sendMessage(prefix + ChatColor.YELLOW + targetName + " has no warnings to remove.");
             }
@@ -865,3 +851,5 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
         }
     }
 }
+
+// made by the cute DreamLong
