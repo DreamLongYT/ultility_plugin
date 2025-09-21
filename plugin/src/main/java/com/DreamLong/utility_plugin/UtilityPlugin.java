@@ -16,6 +16,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.Location;
 
 import java.io.File;
 import java.io.FileReader;
@@ -48,6 +49,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
     private final Set<UUID> loggedInPlayers = new HashSet<>();
     private final Map<UUID, PlayerData> playersData = new HashMap<>();
     private final Map<UUID, BukkitTask> loginTasks = new HashMap<>();
+    private final Map<UUID, Location> lastKnownLocations = new HashMap<>();
     private File dataFolder;
 
     private final String prefix = ChatColor.GRAY + "[" + ChatColor.AQUA + "Utility" + ChatColor.GRAY + "] " + ChatColor.RESET;
@@ -62,6 +64,9 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
         }
         loadAllData();
         
+        // Load the default config.yml
+        this.saveDefaultConfig();
+
         // Register this class as a listener for events
         Bukkit.getPluginManager().registerEvents(this, this);
 
@@ -79,6 +84,9 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
         this.getCommand("checkwarn").setExecutor(new CheckCommandExecutor("warn"));
         this.getCommand("checkban").setExecutor(new CheckCommandExecutor("ban"));
         this.getCommand("checkmute").setExecutor(new CheckCommandExecutor("mute"));
+        
+        // Register the new command to set the login location
+        this.getCommand("setlogin").setExecutor(new SetLoginCommandExecutor());
 
         getLogger().info("UtilityPlugin has been enabled!");
     }
@@ -167,16 +175,29 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
         }
     }
 
+    private Location getLoginLocation() {
+        String worldName = getConfig().getString("login-spawn.world", "world");
+        double x = getConfig().getDouble("login-spawn.x", 0);
+        double y = getConfig().getDouble("login-spawn.y", 100);
+        double z = getConfig().getDouble("login-spawn.z", 0);
+        float yaw = (float) getConfig().getDouble("login-spawn.yaw", 0);
+        float pitch = (float) getConfig().getDouble("login-spawn.pitch", 0);
+        
+        return new Location(Bukkit.getWorld(worldName), x, y, z, yaw, pitch);
+    }
+
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         UUID playerUUID = player.getUniqueId();
         PlayerData playerData = getPlayerData(playerUUID);
         
-        // Increment login attempts every time a player joins
-        playerData.loginAttempts++;
-        savePlayerData(playerUUID);
-
+        // Save the player's current location before teleporting them
+        lastKnownLocations.put(playerUUID, player.getLocation());
+        
+        // Teleport the player to the configured safe spawn location for login
+        player.teleport(getLoginLocation());
+        
         // Check login attempts for progressive punishment
         if (playerData.loginAttempts == 5) {
             player.kickPlayer(ChatColor.RED + "You have been kicked for 5 failed login attempts.\nPlease re-join and try again.");
@@ -238,8 +259,8 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
         Player player = event.getPlayer();
         String command = event.getMessage().split(" ")[0].substring(1);
 
-        // Allow the /login and /register commands to be used
-        if (command.equalsIgnoreCase("login") || command.equalsIgnoreCase("register")) {
+        // Allow the /login, /register, and /setlogin commands to be used
+        if (command.equalsIgnoreCase("login") || command.equalsIgnoreCase("register") || command.equalsIgnoreCase("setlogin")) {
             return;
         }
 
@@ -354,6 +375,7 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             
             playerData.username = player.getName();
             playerData.passwordHash = passwordHash;
+            playerData.loginAttempts = 0; // Reset login attempts on successful registration
             savePlayerData(player.getUniqueId());
             
             player.sendMessage(prefix + ChatColor.GREEN + "You have successfully registered!");
@@ -408,6 +430,13 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                 savePlayerData(player.getUniqueId());
                 player.sendMessage(prefix + ChatColor.GREEN + "You have successfully logged in!");
                 player.sendMessage(prefix + ChatColor.GREEN + "You can now use other commands.");
+                
+                // Teleport the player back to their original location
+                Location lastLocation = lastKnownLocations.get(playerUUID);
+                if (lastLocation != null) {
+                    player.teleport(lastLocation);
+                    lastKnownLocations.remove(playerUUID); // Clean up the map
+                }
 
                 // Cancel the timed login and kick tasks
                 BukkitTask task = loginTasks.remove(playerUUID);
@@ -415,6 +444,8 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                     task.cancel();
                 }
             } else {
+                playerData.loginAttempts++; // Increment attempt on incorrect password
+                savePlayerData(player.getUniqueId());
                 player.sendMessage(prefix + ChatColor.RED + "Incorrect password.");
             }
             
@@ -795,6 +826,42 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             return true;
         }
     }
-}
+    
+    /**
+     * Handles the /setlogin command, which sets the login location to the player's current location.
+     */
+    private class SetLoginCommandExecutor implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
+                return true;
+            }
 
-// This Code is made by DreamLong
+            Player player = (Player) sender;
+            // Check for a specific permission, e.g., utility.admin
+            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.setlogin")) {
+                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
+                return true;
+            }
+            
+            Location location = player.getLocation();
+            
+            // Save the location details to the config file
+            getConfig().set("login-spawn.world", location.getWorld().getName());
+            getConfig().set("login-spawn.x", location.getX());
+            getConfig().set("login-spawn.y", location.getY());
+            getConfig().set("login-spawn.z", location.getZ());
+            getConfig().set("login-spawn.yaw", location.getYaw());
+            getConfig().set("login-spawn.pitch", location.getPitch());
+            
+            saveConfig();
+            
+            player.sendMessage(prefix + ChatColor.GREEN + "Login spawn location has been set to your current position.");
+            player.sendMessage(prefix + ChatColor.GRAY + "World: " + location.getWorld().getName());
+            player.sendMessage(prefix + ChatColor.GRAY + "Coordinates: x=" + (int)location.getX() + ", y=" + (int)location.getY() + ", z=" + (int)location.getZ());
+            
+            return true;
+        }
+    }
+}
