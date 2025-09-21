@@ -17,11 +17,10 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.Location;
-import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.util.Date;
 import java.util.HashMap;
@@ -33,13 +32,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.util.Base64;
-import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * A Minecraft plugin that requires players to log in before they can
- * access certain utility commands. All command logic is contained within
- * this single class using private inner classes.
+ * access certain utility commands. It handles authentication, moderation,
+ * and command management, storing data in separate files for organization.
  */
 public class UtilityPlugin extends JavaPlugin implements Listener {
 
@@ -47,14 +46,26 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
     private final Map<UUID, PlayerData> playersData = new HashMap<>();
     private final Map<UUID, BukkitTask> loginTasks = new HashMap<>();
     private final Map<UUID, Location> lastKnownLocations = new HashMap<>();
+    private File playersFolder;
 
     private final String prefix = ChatColor.GRAY + "[" + ChatColor.AQUA + "Utility" + ChatColor.GRAY + "] " + ChatColor.RESET;
     private static final SimpleDateFormat dateFormat = new SimpleDateFormat("ss/HH/dd/yyyy");
 
     @Override
     public void onEnable() {
-        // This is the line that automatically handles the config file
+        // Create the main plugin folder if it doesn't exist
+        if (!getDataFolder().exists()) {
+            getDataFolder().mkdirs();
+        }
+        
+        // This is the line that automatically handles the global config file
         this.saveDefaultConfig();
+        
+        // Create the dedicated players data folder
+        playersFolder = new File(getDataFolder(), "players");
+        if (!playersFolder.exists()) {
+            playersFolder.mkdirs();
+        }
         
         loadAllData();
 
@@ -96,62 +107,76 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
         getLogger().info("UtilityPlugin has been disabled!");
     }
     
+    /**
+     * Loads all player data from individual files in the 'players' folder.
+     */
     public void loadAllData() {
-        ConfigurationSection playersSection = getConfig().getConfigurationSection("players");
-        if (playersSection == null) {
-            getLogger().info("No player data found in config.yml. Initializing empty data.");
-            return;
-        }
-
-        for (String uuidString : playersSection.getKeys(false)) {
-            try {
-                UUID playerUUID = UUID.fromString(uuidString);
-                ConfigurationSection playerDataSection = playersSection.getConfigurationSection(uuidString);
-                if (playerDataSection != null) {
-                    PlayerData playerData = new PlayerData();
-                    playerData.username = playerDataSection.getString("username");
-                    playerData.passwordHash = playerDataSection.getString("passwordHash");
-                    playerData.warns = playerDataSection.getLong("warns", 0);
-                    playerData.startWarns = playerDataSection.getString("startWarns");
-                    playerData.mutes = playerDataSection.getLong("mutes", 0);
-                    playerData.startMutes = playerDataSection.getString("startMutes");
-                    playerData.ban = playerDataSection.getLong("ban", 0);
-                    playerData.startBans = playerDataSection.getString("startBans");
-                    playerData.loginAttempts = playerDataSection.getLong("loginAttempts", 0);
-                    
-                    playersData.put(playerUUID, playerData);
+        if (playersFolder.exists() && playersFolder.isDirectory()) {
+            File[] playerFiles = playersFolder.listFiles((dir, name) -> name.endsWith(".yml"));
+            if (playerFiles != null) {
+                for (File file : playerFiles) {
+                    try {
+                        UUID playerUUID = UUID.fromString(file.getName().replace(".yml", ""));
+                        FileConfiguration dataConfig = YamlConfiguration.loadConfiguration(file);
+                        
+                        PlayerData playerData = new PlayerData();
+                        playerData.username = dataConfig.getString("username");
+                        playerData.passwordHash = dataConfig.getString("passwordHash");
+                        playerData.warns = dataConfig.getLong("warns", 0);
+                        playerData.startWarns = dataConfig.getString("startWarns");
+                        playerData.mutes = dataConfig.getLong("mutes", 0);
+                        playerData.startMutes = dataConfig.getString("startMutes");
+                        playerData.ban = dataConfig.getLong("ban", 0);
+                        playerData.startBans = dataConfig.getString("startBans");
+                        playerData.loginAttempts = dataConfig.getLong("loginAttempts", 0);
+                        
+                        playersData.put(playerUUID, playerData);
+                    } catch (IllegalArgumentException e) {
+                        getLogger().warning("Skipping invalid player file: " + file.getName());
+                    }
                 }
-            } catch (IllegalArgumentException e) {
-                getLogger().warning("Invalid UUID found in config.yml: " + uuidString);
             }
         }
         getLogger().info("Successfully loaded data for " + playersData.size() + " players.");
     }
     
+    /**
+     * Saves all player data to their respective files.
+     */
     public void saveAllData() {
         for (UUID uuid : playersData.keySet()) {
             savePlayerData(uuid);
         }
-        saveConfig();
     }
     
+    /**
+     * Saves a single player's data to a file in the 'players' folder.
+     * @param uuid The UUID of the player to save.
+     */
     public void savePlayerData(UUID uuid) {
         PlayerData playerData = playersData.get(uuid);
         if (playerData == null) {
             return;
         }
         
-        // Use a ConfigurationSection to save the player's data
-        ConfigurationSection playerSection = getConfig().createSection("players." + uuid.toString());
-        playerSection.set("username", playerData.username);
-        playerSection.set("passwordHash", playerData.passwordHash);
-        playerSection.set("warns", playerData.warns);
-        playerSection.set("startWarns", playerData.startWarns);
-        playerSection.set("mutes", playerData.mutes);
-        playerSection.set("startMutes", playerData.startMutes);
-        playerSection.set("ban", playerData.ban);
-        playerSection.set("startBans", playerData.startBans);
-        playerSection.set("loginAttempts", playerData.loginAttempts);
+        File playerFile = new File(playersFolder, uuid.toString() + ".yml");
+        FileConfiguration dataConfig = YamlConfiguration.loadConfiguration(playerFile);
+        
+        dataConfig.set("username", playerData.username);
+        dataConfig.set("passwordHash", playerData.passwordHash);
+        dataConfig.set("warns", playerData.warns);
+        dataConfig.set("startWarns", playerData.startWarns);
+        dataConfig.set("mutes", playerData.mutes);
+        dataConfig.set("startMutes", playerData.startMutes);
+        dataConfig.set("ban", playerData.ban);
+        dataConfig.set("startBans", playerData.startBans);
+        dataConfig.set("loginAttempts", playerData.loginAttempts);
+
+        try {
+            dataConfig.save(playerFile);
+        } catch (IOException e) {
+            getLogger().severe("Could not save player data for " + playerData.username + ": " + e.getMessage());
+        }
     }
 
     private Location getLoginLocation() {
@@ -356,7 +381,6 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             playerData.passwordHash = passwordHash;
             playerData.loginAttempts = 0; // Reset login attempts on successful registration
             savePlayerData(player.getUniqueId());
-            saveConfig();
             
             player.sendMessage(prefix + ChatColor.GREEN + "You have successfully registered!");
             player.sendMessage(prefix + ChatColor.GREEN + "You can now log in with " + ChatColor.GOLD + "/login <password>" + ChatColor.GREEN + ".");
@@ -408,7 +432,6 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                 // Reset login attempts on successful login
                 playerData.loginAttempts = 0;
                 savePlayerData(player.getUniqueId());
-                saveConfig();
                 player.sendMessage(prefix + ChatColor.GREEN + "You have successfully logged in!");
                 player.sendMessage(prefix + ChatColor.GREEN + "You can now use other commands.");
                 
@@ -427,7 +450,6 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             } else {
                 playerData.loginAttempts++; // Increment attempt on incorrect password
                 savePlayerData(player.getUniqueId());
-                saveConfig();
                 player.sendMessage(prefix + ChatColor.RED + "Incorrect password.");
             }
             
@@ -494,7 +516,6 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                 }
             }
             savePlayerData(target.getUniqueId());
-            saveConfig();
             return true;
         }
     }
@@ -633,7 +654,6 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                 }
             }
             savePlayerData(target.getUniqueId());
-            saveConfig();
             return true;
         }
     }
@@ -677,7 +697,6 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
             target.sendMessage(prefix + ChatColor.RED + "You have been warned by a staff member. Total warnings: " + targetData.warns);
             
             savePlayerData(target.getUniqueId());
-            saveConfig();
             return true;
         }
     }
@@ -725,7 +744,6 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
                      ((Player) target).sendMessage(prefix + ChatColor.GREEN + "A staff member has removed one of your warnings. New total warnings: " + targetData.warns);
                 }
                 savePlayerData(target.getUniqueId());
-                saveConfig();
             } else {
                 player.sendMessage(prefix + ChatColor.YELLOW + targetName + " has no warnings to remove.");
             }
@@ -851,5 +869,3 @@ public class UtilityPlugin extends JavaPlugin implements Listener {
         }
     }
 }
-
-// made by the cute DreamLong
