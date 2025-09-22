@@ -1,5 +1,5 @@
 name: UtilityPlugin
-version: 1.0
+version: '1.0'
 main: com.DreamLong.utility_plugin.UtilityPlugin
 api-version: 1.21
 authors: [DreamLong]
@@ -11,6 +11,10 @@ usage: /<command> <password>
 register:
 description: Registers a new account on the server.
 usage: /<command> <password> <confirm_password>
+setlogin:
+description: Sets the login spawn location to your current position.
+usage: /<command>
+permission: utility.setlogin
 ban:
 description: Permanently bans a player.
 usage: /<command> <player> <reason>
@@ -58,4 +62,7 @@ permission: utility.helper
 permissions:
 utility.helper:
 description: Allows access to moderation commands.
+default: op
+utility.setlogin:
+description: Allows a player to set the login location.
 default: op
