@@ -4,65 +4,81 @@ main: com.DreamLong.utility_plugin.UtilityPlugin
 api-version: 1.21
 authors: [DreamLong]
 description: A Minecraft plugin with login and moderation commands.
+
 commands:
-login:
-description: Logs a player into the server.
-usage: /<command> <password>
-register:
-description: Registers a new account on the server.
-usage: /<command> <password> <confirm_password>
-setlogin:
-description: Sets the login spawn location to your current position.
-usage: /<command>
-permission: utility.setlogin
-ban:
-description: Permanently bans a player.
-usage: /<command> <player> <reason>
-permission: utility.helper
-unban:
-description: Unbans a player.
-usage: /<command> <player> <reason>
-permission: utility.helper
-tempban:
-description: Temporarily bans a player.
-usage: /<command> <player> <reason>
-permission: utility.helper
-kick:
-description: Kicks a player from the server.
-usage: /<command> <player> <reason>
-permission: utility.helper
-mute:
-description: Mutes a player.
-usage: /<command> <player> <reason>
-permission: utility.helper
-unmute:
-description: Unmutes a player.
-usage: /<command> <player> <reason>
-permission: utility.helper
-warn:
-description: Gives a warning to a player.
-usage: /<command> <player> <reason>
-permission: utility.helper
-unwarn:
-description: Removes a warning from a player.
-usage: /<command> <player> <reason>
-permission: utility.helper
-checkwarn:
-description: Checks a player's warning count.
-usage: /<command> <player>
-permission: utility.helper
-checkban:
-description: Checks if a player is banned.
-usage: /<command> <player>
-permission: utility.helper
-checkmute:
-description: Checks if a player is muted.
-usage: /<command> <player>
-permission: utility.helper
+  login:
+    description: Logs a player into the server.
+    usage: /<command> <password>
+
+  register:
+    description: Registers a new account on the server.
+    usage: /<command> <password> <confirm_password>
+
+  setlogin:
+    description: Sets the login spawn location to your current position.
+    usage: /<command>
+    permission: utility.setlogin
+
+  ban:
+    description: Permanently bans a player.
+    usage: /<command> <player> <reason>
+    permission: utility.helper
+
+  unban:
+    description: Unbans a player.
+    usage: /<command> <player> <reason>
+    permission: utility.helper
+
+  tempban:
+    description: Temporarily bans a player.
+    usage: /<command> <player> <duration_minutes> <reason>
+    permission: utility.helper
+
+  kick:
+    description: Kicks a player from the server.
+    usage: /<command> <player> <reason>
+    permission: utility.helper
+
+  mute:
+    description: Mutes a player.
+    usage: /<command> <player> <reason>
+    permission: utility.helper
+
+  unmute:
+    description: Unmutes a player.
+    usage: /<command> <player> <reason>
+    permission: utility.helper
+
+  warn:
+    description: Gives a warning to a player.
+    usage: /<command> <player> <reason>
+    permission: utility.helper
+
+  unwarn:
+    description: Removes a warning from a player.
+    usage: /<command> <player>
+    permission: utility.helper
+
+  checkwarn:
+    description: Checks a player's warning count.
+    usage: /<command> <player>
+    permission: utility.helper
+
+  checkban:
+    description: Checks if a player is banned.
+    usage: /<command> <player>
+    permission: utility.helper
+
+  checkmute:
+    description: Checks if a player is muted.
+    usage: /<command> <player>
+    permission: utility.helper
+
 permissions:
-utility.helper:
-description: Allows access to moderation commands.
-default: op
-utility.setlogin:
-description: Allows a player to set the login location.
-default: op
+  utility.helper:
+    description: Allows access to moderation commands.
+    default: op
+
+  utility.setlogin:
+    description: Allows a player to set the login location.
+    default: op
