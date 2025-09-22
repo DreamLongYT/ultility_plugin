@@ -1,871 +1,925 @@
-package com.DreamLong.utility_plugin;
-
 import org.bukkit.Bukkit;
-import org.bukkit.BanEntry;
 import org.bukkit.ChatColor;
-import org.bukkit.OfflinePlayer;
+import org.bukkit.Location;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerChatEvent;
-import org.bukkit.event.player.PlayerCommandPreprocessEvent;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
-import org.bukkit.Location;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.text.SimpleDateFormat;
 import java.util.Base64;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
-/**
- * A Minecraft plugin that requires players to log in before they can
- * access certain utility commands. It handles authentication, moderation,
- * and command management, storing data in separate files for organization.
- */
-public class UtilityPlugin extends JavaPlugin implements Listener {
+public final class UtilityPlugin extends JavaPlugin implements Listener {
 
-    private final Set<UUID> loggedInPlayers = new HashSet<>();
-    private final Map<UUID, PlayerData> playersData = new HashMap<>();
-    private final Map<UUID, BukkitTask> loginTasks = new HashMap<>();
-    private final Map<UUID, Location> lastKnownLocations = new HashMap<>();
+    // Prefix for all plugin messages in the chat
+    private final String prefix = ChatColor.GRAY + "[" + ChatColor.DARK_AQUA + "Utility" + ChatColor.GRAY + "]" + ChatColor.RESET + " ";
+    
+    // Maps to store player data and scheduled tasks
+    private final Map<UUID, PlayerData> playerDataMap = new ConcurrentHashMap<>();
+    private final Map<UUID, BukkitTask> loginTasks = new ConcurrentHashMap<>();
+    private final Map<UUID, Location> playerLocations = new ConcurrentHashMap<>();
+    
+    // Folder to store player data files
     private File playersFolder;
-
-    private final String prefix = ChatColor.GRAY + "[" + ChatColor.AQUA + "Utility" + ChatColor.GRAY + "] " + ChatColor.RESET;
-    private static final SimpleDateFormat dateFormat = new SimpleDateFormat("ss/HH/dd/yyyy");
 
     @Override
     public void onEnable() {
-        // Create the main plugin folder if it doesn't exist
-        if (!getDataFolder().exists()) {
-            getDataFolder().mkdirs();
-        }
+        getLogger().info("UtilityPlugin has been enabled!");
         
-        // This is the line that automatically handles the global config file
-        this.saveDefaultConfig();
+        // Register all command executors with the plugin
+        getCommand("login").setExecutor(new LoginCommandExecutor());
+        getCommand("register").setExecutor(new RegisterCommandExecutor());
+        getCommand("setlogin").setExecutor(new SetLoginCommandExecutor());
+        getCommand("ban").setExecutor(new BanCommandExecutor());
+        getCommand("unban").setExecutor(new UnbanCommandExecutor());
+        getCommand("tempban").setExecutor(new TempBanCommandExecutor());
+        getCommand("kick").setExecutor(new KickCommandExecutor());
+        getCommand("mute").setExecutor(new MuteCommandExecutor());
+        getCommand("unmute").setExecutor(new UnMuteCommandExecutor());
+        getCommand("warn").setExecutor(new WarnCommandExecutor());
+        getCommand("unwarn").setExecutor(new UnwarnCommandExecutor());
+        getCommand("checkwarn").setExecutor(new CheckWarnCommandExecutor());
+        getCommand("checkban").setExecutor(new CheckBanCommandExecutor());
+        getCommand("checkmute").setExecutor(new CheckMuteCommandExecutor());
         
-        // Create the dedicated players data folder
+        // Register this class to listen for events
+        getServer().getPluginManager().registerEvents(this, this);
+        
+        // Save the default configuration file if it doesn't exist
+        saveDefaultConfig();
+        
+        // Load all player data from the files
+        loadAllData();
+        
+        // Create the players data folder if it doesn't exist
         playersFolder = new File(getDataFolder(), "players");
         if (!playersFolder.exists()) {
             playersFolder.mkdirs();
         }
-        
-        loadAllData();
-
-        // Register this class as a listener for events
-        Bukkit.getPluginManager().registerEvents(this, this);
-
-        // Register the command executors as private inner classes
-        this.getCommand("login").setExecutor(new LoginCommandExecutor());
-        this.getCommand("register").setExecutor(new RegisterCommandExecutor());
-        this.getCommand("ban").setExecutor(new BanCommandExecutor("ban"));
-        this.getCommand("unban").setExecutor(new UnbanCommandExecutor());
-        this.getCommand("tempban").setExecutor(new BanCommandExecutor("tempban"));
-        this.getCommand("kick").setExecutor(new KickCommandExecutor());
-        this.getCommand("mute").setExecutor(new MuteCommandExecutor("mute"));
-        this.getCommand("unmute").setExecutor(new MuteCommandExecutor("unmute"));
-        this.getCommand("warn").setExecutor(new WarnCommandExecutor());
-        this.getCommand("unwarn").setExecutor(new UnwarnCommandExecutor());
-        this.getCommand("checkwarn").setExecutor(new CheckCommandExecutor("warn"));
-        this.getCommand("checkban").setExecutor(new CheckCommandExecutor("ban"));
-        this.getCommand("checkmute").setExecutor(new CheckCommandExecutor("mute"));
-        
-        // Register the new command to set the login location
-        this.getCommand("setlogin").setExecutor(new SetLoginCommandExecutor());
-
-        getLogger().info("UtilityPlugin has been enabled!");
     }
 
     @Override
     public void onDisable() {
-        saveAllData();
-        // Clear the in-memory data on disable
-        loggedInPlayers.clear();
-        playersData.clear();
-        // Cancel all pending login tasks
-        for (BukkitTask task : loginTasks.values()) {
-            task.cancel();
-        }
-        loginTasks.clear();
         getLogger().info("UtilityPlugin has been disabled!");
+        // Save all player data before the plugin shuts down
+        saveAllData();
     }
-    
-    /**
-     * Loads all player data from individual files in the 'players' folder.
-     */
-    public void loadAllData() {
-        if (playersFolder.exists() && playersFolder.isDirectory()) {
-            File[] playerFiles = playersFolder.listFiles((dir, name) -> name.endsWith(".yml"));
-            if (playerFiles != null) {
-                for (File file : playerFiles) {
-                    try {
-                        UUID playerUUID = UUID.fromString(file.getName().replace(".yml", ""));
-                        FileConfiguration dataConfig = YamlConfiguration.loadConfiguration(file);
-                        
-                        PlayerData playerData = new PlayerData();
-                        playerData.username = dataConfig.getString("username");
-                        playerData.passwordHash = dataConfig.getString("passwordHash");
-                        playerData.warns = dataConfig.getLong("warns", 0);
-                        playerData.startWarns = dataConfig.getString("startWarns");
-                        playerData.mutes = dataConfig.getLong("mutes", 0);
-                        playerData.startMutes = dataConfig.getString("startMutes");
-                        playerData.ban = dataConfig.getLong("ban", 0);
-                        playerData.startBans = dataConfig.getString("startBans");
-                        playerData.loginAttempts = dataConfig.getLong("loginAttempts", 0);
-                        
-                        playersData.put(playerUUID, playerData);
-                    } catch (IllegalArgumentException e) {
-                        getLogger().warning("Skipping invalid player file: " + file.getName());
-                    }
-                }
-            }
-        }
-        getLogger().info("Successfully loaded data for " + playersData.size() + " players.");
-    }
-    
-    /**
-     * Saves all player data to their respective files.
-     */
-    public void saveAllData() {
-        for (UUID uuid : playersData.keySet()) {
-            savePlayerData(uuid);
-        }
-    }
-    
-    /**
-     * Saves a single player's data to a file in the 'players' folder.
-     * @param uuid The UUID of the player to save.
-     */
-    public void savePlayerData(UUID uuid) {
-        PlayerData playerData = playersData.get(uuid);
-        if (playerData == null) {
+
+    // Loads all player data from the 'players' folder
+    private void loadAllData() {
+        playersFolder = new File(getDataFolder(), "players");
+        if (!playersFolder.exists()) {
             return;
         }
-        
-        File playerFile = new File(playersFolder, uuid.toString() + ".yml");
-        FileConfiguration dataConfig = YamlConfiguration.loadConfiguration(playerFile);
-        
-        dataConfig.set("username", playerData.username);
-        dataConfig.set("passwordHash", playerData.passwordHash);
-        dataConfig.set("warns", playerData.warns);
-        dataConfig.set("startWarns", playerData.startWarns);
-        dataConfig.set("mutes", playerData.mutes);
-        dataConfig.set("startMutes", playerData.startMutes);
-        dataConfig.set("ban", playerData.ban);
-        dataConfig.set("startBans", playerData.startBans);
-        dataConfig.set("loginAttempts", playerData.loginAttempts);
 
+        File[] playerFiles = playersFolder.listFiles((dir, name) -> name.toLowerCase().endsWith(".yml"));
+        if (playerFiles != null) {
+            for (File file : playerFiles) {
+                YamlConfiguration data = YamlConfiguration.loadConfiguration(file);
+                UUID playerUUID = UUID.fromString(file.getName().replace(".yml", ""));
+                String username = data.getString("Username");
+                String passwordHash = data.getString("Password");
+                long warns = data.getLong("Warns", 0);
+                long startWarns = data.getLong("StartWarns", 0);
+                long mutes = data.getLong("Mutes", 0);
+                long startMutes = data.getLong("StartMutes", 0);
+                long bans = data.getLong("Bans", 0);
+                long startBans = data.getLong("StartBans", 0);
+                long loginAttempts = data.getLong("loginAttempts", 0);
+
+                playerDataMap.put(playerUUID, new PlayerData(username, passwordHash, warns, startWarns, mutes, startMutes, bans, startBans, loginAttempts));
+            }
+        }
+        getLogger().info("Successfully loaded data for " + playerDataMap.size() + " players.");
+    }
+
+    // Saves all player data to the 'players' folder
+    private void saveAllData() {
+        for (Map.Entry<UUID, PlayerData> entry : playerDataMap.entrySet()) {
+            UUID playerUUID = entry.getKey();
+            PlayerData data = entry.getValue();
+
+            File playerFile = new File(playersFolder, playerUUID.toString() + ".yml");
+            YamlConfiguration config = new YamlConfiguration();
+            config.set("Username", data.getUsername());
+            config.set("Password", data.getPasswordHash());
+            config.set("Warns", data.getWarns());
+            config.set("StartWarns", data.getStartWarns());
+            config.set("Mutes", data.getMutes());
+            config.set("StartMutes", data.getStartMutes());
+            config.set("Bans", data.getBans());
+            config.set("StartBans", data.getStartBans());
+            config.set("loginAttempts", data.getLoginAttempts());
+
+            try {
+                config.save(playerFile);
+            } catch (IOException e) {
+                getLogger().severe("Could not save data for player " + data.getUsername() + ": " + e.getMessage());
+            }
+        }
+        getLogger().info("Successfully saved data for " + playerDataMap.size() + " players.");
+    }
+    
+    // Saves data for a single player to their YML file
+    private void savePlayerData(UUID playerUUID) {
+        PlayerData data = playerDataMap.get(playerUUID);
+        if (data == null) {
+            return;
+        }
+    
+        File playerFile = new File(playersFolder, playerUUID.toString() + ".yml");
+        YamlConfiguration config = new YamlConfiguration();
+        config.set("Username", data.getUsername());
+        config.set("Password", data.getPasswordHash());
+        config.set("Warns", data.getWarns());
+        config.set("StartWarns", data.getStartWarns());
+        config.set("Mutes", data.getMutes());
+        config.set("StartMutes", data.getStartMutes());
+        config.set("Bans", data.getBans());
+        config.set("StartBans", data.getStartBans());
+        config.set("loginAttempts", data.getLoginAttempts());
+    
         try {
-            dataConfig.save(playerFile);
+            config.save(playerFile);
         } catch (IOException e) {
-            getLogger().severe("Could not save player data for " + playerData.username + ": " + e.getMessage());
+            getLogger().severe("Could not save data for player " + data.getUsername() + ": " + e.getMessage());
+        }
+    }
+    
+    // Loads data for a single player from their YML file
+    private void loadPlayerData(UUID playerUUID) {
+        File playerFile = new File(playersFolder, playerUUID.toString() + ".yml");
+        if (!playerFile.exists()) {
+            return;
+        }
+    
+        YamlConfiguration data = YamlConfiguration.loadConfiguration(playerFile);
+        String username = data.getString("Username");
+        String passwordHash = data.getString("Password");
+        long warns = data.getLong("Warns", 0);
+        long startWarns = data.getLong("StartWarns", 0);
+        long mutes = data.getLong("Mutes", 0);
+        long startMutes = data.getLong("StartMutes", 0);
+        long bans = data.getLong("Bans", 0);
+        long startBans = data.getLong("StartBans", 0);
+        long loginAttempts = data.getLong("loginAttempts", 0);
+    
+        playerDataMap.put(playerUUID, new PlayerData(username, passwordHash, warns, startWarns, mutes, startMutes, bans, startBans, loginAttempts));
+    }
+
+    // Hashes a password using SHA-256 for secure storage
+    private String hashPassword(String password) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(password.getBytes());
+            return Base64.getEncoder().encodeToString(hash);
+        } catch (NoSuchAlgorithmException e) {
+            getLogger().severe("SHA-256 algorithm not found.");
+            return null;
         }
     }
 
-    private Location getLoginLocation() {
-        String worldName = getConfig().getString("login-spawn.world", "world");
-        double x = getConfig().getDouble("login-spawn.x", 0);
-        double y = getConfig().getDouble("login-spawn.y", 100);
-        double z = getConfig().getDouble("login-spawn.z", 0);
-        float yaw = (float) getConfig().getDouble("login-spawn.yaw", 0);
-        float pitch = (float) getConfig().getDouble("login-spawn.pitch", 0);
-        
-        return new Location(Bukkit.getWorld(worldName), x, y, z, yaw, pitch);
+    public String getPrefix() {
+        return prefix;
     }
+    
+    public boolean isLoggedIn(UUID playerUUID) {
+        return playerDataMap.containsKey(playerUUID) && playerDataMap.get(playerUUID).isLoggedIn();
+    }
+    
+    public void setLoggedIn(UUID playerUUID) {
+        if (playerDataMap.containsKey(playerUUID)) {
+            playerDataMap.get(playerUUID).setLoggedIn(true);
+        }
+    }
+    
+    // Checks if a player is currently muted
+    private boolean isMuted(UUID playerUUID) {
+        if (playerDataMap.containsKey(playerUUID)) {
+            PlayerData data = playerDataMap.get(playerUUID);
+            if (data.getMutes() > 0) {
+                if (data.getMutes() == -1) {
+                    return true;
+                }
+                long muteDuration = TimeUnit.SECONDS.toMillis(data.getMutes());
+                long timePassed = System.currentTimeMillis() - data.getStartMutes();
+                return timePassed < muteDuration;
+            }
+        }
+        return false;
+    }
+    
+    // Checks if a player is currently banned
+    private boolean isBanned(UUID playerUUID) {
+        if (playerDataMap.containsKey(playerUUID)) {
+            PlayerData data = playerDataMap.get(playerUUID);
+            if (data.getBans() > 0) {
+                if (data.getBans() == -1) {
+                    return true;
+                }
+                long banDuration = TimeUnit.MINUTES.toMillis(data.getBans());
+                long timePassed = System.currentTimeMillis() - data.getStartBans();
+                return timePassed < banDuration;
+            }
+        }
+        return false;
+    }
+    
+
+    // Player Data Class to store all relevant information
+    private static class PlayerData {
+        private String username;
+        private String passwordHash;
+        private long warns;
+        private long startWarns;
+        private long mutes;
+        private long startMutes;
+        private long bans;
+        private long startBans;
+        private long loginAttempts;
+        private boolean loggedIn;
+
+        public PlayerData(String username, String passwordHash, long warns, long startWarns, long mutes, long startMutes, long bans, long startBans, long loginAttempts) {
+            this.username = username;
+            this.passwordHash = passwordHash;
+            this.warns = warns;
+            this.startWarns = startWarns;
+            this.mutes = mutes;
+            this.startMutes = startMutes;
+            this.bans = bans;
+            this.startBans = startBans;
+            this.loginAttempts = loginAttempts;
+            this.loggedIn = false;
+        }
+
+        // Getters and setters for all data fields
+        public String getUsername() { return username; }
+        public String getPasswordHash() { return passwordHash; }
+        public long getWarns() { return warns; }
+        public long getStartWarns() { return startWarns; }
+        public long getMutes() { return mutes; }
+        public long getStartMutes() { return startMutes; }
+        public long getBans() { return bans; }
+        public long getStartBans() { return startBans; }
+        public long getLoginAttempts() { return loginAttempts; }
+        public boolean isLoggedIn() { return loggedIn; }
+
+        public void setUsername(String username) { this.username = username; }
+        public void setPasswordHash(String passwordHash) { this.passwordHash = passwordHash; }
+        public void setWarns(long warns) { this.warns = warns; }
+        public void setStartWarns(long startWarns) { this.startWarns = startWarns; }
+        public void setMutes(long mutes) { this.mutes = mutes; }
+        public void setStartMutes(long startMutes) { this.startMutes = startMutes; }
+        public void setBans(long bans) { this.bans = bans; }
+        public void setStartBans(long startBans) { this.startBans = startBans; }
+        public void setLoginAttempts(long loginAttempts) { this.loginAttempts = loginAttempts; }
+        public void setLoggedIn(boolean loggedIn) { this.loggedIn = loggedIn; }
+    }
+
+
+    // --- Event Handlers ---
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         UUID playerUUID = player.getUniqueId();
-        PlayerData playerData = getPlayerData(playerUUID);
         
-        // Save the player's current location before teleporting them
-        lastKnownLocations.put(playerUUID, player.getLocation());
-        
-        // Teleport the player to the configured safe spawn location for login
-        player.teleport(getLoginLocation());
-        
-        // Check login attempts for progressive punishment
-        if (playerData.loginAttempts == 5) {
-            player.kickPlayer(ChatColor.RED + "You have been kicked for 5 failed login attempts.\nPlease re-join and try again.");
-            return;
-        } else if (playerData.loginAttempts == 6) {
-            Date expiry = new Date(System.currentTimeMillis() + 5 * 60 * 1000); // 5 minutes
-            Bukkit.getBanList(org.bukkit.BanList.Type.NAME).addBan(player.getName(), "Too many failed login attempts (5 min ban)", expiry, "UtilityPlugin");
-            player.kickPlayer(ChatColor.RED + "You have been banned for 5 minutes due to too many failed login attempts.");
-            return;
-        } else if (playerData.loginAttempts >= 7) {
-            Date expiry = new Date(System.currentTimeMillis() + 24 * 60 * 60 * 1000); // 24 hours
-            Bukkit.getBanList(org.bukkit.BanList.Type.NAME).addBan(player.getName(), "Too many failed login attempts (24h ban)", expiry, "UtilityPlugin");
-            player.kickPlayer(ChatColor.RED + "You have been banned for 24 hours due to too many failed login attempts.");
+        // Load data for the joining player
+        loadPlayerData(playerUUID);
+
+        // Check if the player is banned
+        if (isBanned(playerUUID)) {
+            PlayerData data = playerDataMap.get(playerUUID);
+            long banDuration = data.getBans();
+            String reason = "You are currently banned from the server.";
+            
+            if (banDuration > 0) {
+                long timeRemaining = banDuration - TimeUnit.MILLISECONDS.toMinutes(System.currentTimeMillis() - data.getStartBans());
+                reason += ChatColor.RED + " Your ban expires in " + timeRemaining + " minutes.";
+            } else {
+                reason += ChatColor.RED + " This is a permanent ban.";
+            }
+            player.kickPlayer(getPrefix() + reason);
             return;
         }
 
-        if (playerData.passwordHash == null) {
-            player.sendMessage(prefix + ChatColor.YELLOW + "You must register an account to access commands!");
-            player.sendMessage(prefix + ChatColor.YELLOW + "Type " + ChatColor.GOLD + "/register <password> <confirm_password>" + ChatColor.YELLOW + " to continue.");
-        } else {
-            player.sendMessage(prefix + ChatColor.YELLOW + "You must log in to access commands!");
-            player.sendMessage(prefix + ChatColor.YELLOW + "Type " + ChatColor.GOLD + "/login <password>" + ChatColor.YELLOW + " to continue.");
-        }
-
-        // Start a timed task to remind players to log in and kick them after a minute
-        BukkitTask loginTask = Bukkit.getScheduler().runTaskTimer(this, () -> {
-            if (!isLoggedIn(playerUUID)) {
-                if (playerData.passwordHash == null) {
-                    player.sendMessage(prefix + ChatColor.YELLOW + "Please register using " + ChatColor.GOLD + "/register <password> <confirm_password>");
-                } else {
-                    player.sendMessage(prefix + ChatColor.YELLOW + "Please log in using " + ChatColor.GOLD + "/login <password>");
+        // Check if the player is registered
+        if (!playerDataMap.containsKey(playerUUID) || playerDataMap.get(playerUUID).getPasswordHash() == null) {
+            player.sendMessage(getPrefix() + ChatColor.YELLOW + "Welcome! You are not registered. Please use " + ChatColor.AQUA + "/register <password> <confirm_password>" + ChatColor.YELLOW + " to create an account.");
+            player.sendMessage(getPrefix() + ChatColor.YELLOW + "Please register within 5 minutes or you will be kicked.");
+            
+            // Set up a scheduled task to kick the player if they don't register
+            BukkitTask loginTask = Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (!isLoggedIn(playerUUID)) {
+                    player.kickPlayer(ChatColor.RED + "You were kicked for not registering within the time limit.");
                 }
+            }, 20L * 60 * 5); // 5 minutes in ticks (20 ticks = 1 second)
+            loginTasks.put(playerUUID, loginTask);
+        } else {
+            // Player is registered but not logged in
+            setLoggedIn(playerUUID);
+            
+            player.sendMessage(getPrefix() + ChatColor.YELLOW + "Welcome back! Please log in using " + ChatColor.AQUA + "/login <password>" + ChatColor.YELLOW + " to continue.");
+            
+            // Store player's location to teleport them back after login
+            if (player.getBedSpawnLocation() != null) {
+                playerLocations.put(playerUUID, player.getBedSpawnLocation());
+            } else {
+                playerLocations.put(playerUUID, player.getLocation());
             }
-        }, 40L, 40L); // 40 ticks = 2 seconds
-
-        BukkitTask kickTask = Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (!isLoggedIn(playerUUID)) {
-                player.kickPlayer(ChatColor.RED + "You have been kicked for inactivity.\nPlease log in to play on the server.");
-            }
-        }, 1200L); // 1200 ticks = 60 seconds (1 minute)
-
-        loginTasks.put(playerUUID, loginTask);
-        loginTasks.put(playerUUID, kickTask);
+            player.teleport(getLoginSpawnLocation());
+            
+            // Set up a scheduled task to kick the player if they don't log in
+            BukkitTask loginTask = Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (!isLoggedIn(playerUUID)) {
+                    player.kickPlayer(ChatColor.RED + "You were kicked for not logging in within the time limit.");
+                }
+            }, 20L * 60 * 5); // 5 minutes in ticks
+            loginTasks.put(playerUUID, loginTask);
+        }
     }
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        savePlayerData(event.getPlayer().getUniqueId());
-        loggedInPlayers.remove(event.getPlayer().getUniqueId());
-        BukkitTask task = loginTasks.remove(event.getPlayer().getUniqueId());
-        if (task != null) {
-            task.cancel();
-        }
-    }
-
-    // This event prevents players from running any commands until they log in
-    @EventHandler
-    public void onPlayerCommandPreprocess(PlayerCommandPreprocessEvent event) {
-        Player player = event.getPlayer();
-        String command = event.getMessage().split(" ")[0].substring(1);
-
-        // Allow the /login, /register, and /setlogin commands to be used
-        if (command.equalsIgnoreCase("login") || command.equalsIgnoreCase("register") || command.equalsIgnoreCase("setlogin")) {
-            return;
-        }
-
-        // Check if the player is logged in. If not, cancel the command.
-        if (!isLoggedIn(player.getUniqueId())) {
-            event.setCancelled(true);
-            player.sendMessage(prefix + ChatColor.RED + "You must be logged in to use this command.");
-            player.sendMessage(prefix + ChatColor.RED + "Type " + ChatColor.GOLD + "/login <password>" + ChatColor.RED + " to continue.");
-        }
-    }
-
-    // Prevents muted players from chatting
-    @EventHandler
-    public void onPlayerChat(PlayerChatEvent event) {
-        PlayerData playerData = playersData.get(event.getPlayer().getUniqueId());
-        if (playerData != null && playerData.isMuted()) {
-            event.setCancelled(true);
-            event.getPlayer().sendMessage(prefix + ChatColor.RED + "You are muted and cannot chat.");
-        }
-    }
-
-    /**
-     * Checks if a player's UUID is in the logged-in set.
-     * @param playerUUID The UUID of the player.
-     * @return true if the player is logged in, false otherwise.
-     */
-    public boolean isLoggedIn(UUID playerUUID) {
-        return loggedInPlayers.contains(playerUUID);
-    }
-
-    private PlayerData getPlayerData(UUID uuid) {
-        return playersData.computeIfAbsent(uuid, k -> new PlayerData());
+        UUID playerUUID = event.getPlayer().getUniqueId();
+        
+        // Save player data on quit
+        savePlayerData(playerUUID);
+        
+        // Remove from maps
+        playerDataMap.remove(playerUUID);
+        loginTasks.remove(playerUUID);
+        playerLocations.remove(playerUUID);
     }
     
-    private String getSha256Hash(String input) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(input.getBytes());
-            return Base64.getEncoder().encodeToString(hash);
-        } catch (NoSuchAlgorithmException e) {
-            getLogger().severe("SHA-256 algorithm not found!");
-            return null;
-        }
-    }
-
-    private static class PlayerData {
-        public String username;
-        public String passwordHash;
-        public long warns = 0;
-        public String startWarns;
-        public long mutes = 0;
-        public String startMutes;
-        public long ban = 0;
-        public String startBans;
-        public long loginAttempts = 0;
+    @EventHandler
+    public void onPlayerChat(AsyncPlayerChatEvent event) {
+        Player player = event.getPlayer();
+        UUID playerUUID = player.getUniqueId();
         
-        public boolean isMuted() {
-            if (mutes <= 0) {
-                return false;
-            }
-            if (mutes == -1) {
-                return true;
-            }
-            try {
-                Date startDate = dateFormat.parse(startMutes);
-                long elapsedMinutes = TimeUnit.MILLISECONDS.toMinutes(new Date().getTime() - startDate.getTime());
-                return elapsedMinutes < mutes;
-            } catch (java.text.ParseException e) {
-                return false;
-            }
+        // Prevent chat if the player is not logged in or is muted
+        if (!isLoggedIn(playerUUID)) {
+            event.setCancelled(true);
+            player.sendMessage(getPrefix() + ChatColor.RED + "You must be logged in to chat.");
+        }
+        
+        if (isMuted(playerUUID)) {
+            event.setCancelled(true);
+            player.sendMessage(getPrefix() + ChatColor.RED + "You are currently muted and cannot chat.");
         }
     }
 
-    /**
-     * Handles the /register command.
-     */
-    private class RegisterCommandExecutor implements CommandExecutor {
-        @Override
-        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
-                return true;
-            }
 
-            Player player = (Player) sender;
-            PlayerData playerData = getPlayerData(player.getUniqueId());
-            
-            if (playerData.passwordHash != null) {
-                player.sendMessage(prefix + ChatColor.RED + "You are already registered!");
-                return true;
-            }
-            
-            if (args.length != 2) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /register <password> <confirm_password>");
-                return true;
-            }
-            
-            String password = args[0];
-            String confirmPassword = args[1];
+    // --- Command Executors ---
 
-            if (!password.equals(confirmPassword)) {
-                player.sendMessage(prefix + ChatColor.RED + "Passwords do not match. Please try again.");
-                return true;
-            }
-            
-            String passwordHash = getSha256Hash(password);
-            
-            if (passwordHash == null) {
-                player.sendMessage(prefix + ChatColor.RED + "Failed to hash your password. Please contact an admin.");
-                return true;
-            }
-            
-            playerData.username = player.getName();
-            playerData.passwordHash = passwordHash;
-            playerData.loginAttempts = 0; // Reset login attempts on successful registration
-            savePlayerData(player.getUniqueId());
-            
-            player.sendMessage(prefix + ChatColor.GREEN + "You have successfully registered!");
-            player.sendMessage(prefix + ChatColor.GREEN + "You can now log in with " + ChatColor.GOLD + "/login <password>" + ChatColor.GREEN + ".");
-            
-            return true;
-        }
-    }
-
-    /**
-     * Handles the /login command.
-     */
+    // Login command
     private class LoginCommandExecutor implements CommandExecutor {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
             if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Only players can use this command.");
                 return true;
             }
 
             Player player = (Player) sender;
             UUID playerUUID = player.getUniqueId();
-            PlayerData playerData = playersData.get(playerUUID);
 
             if (isLoggedIn(playerUUID)) {
-                player.sendMessage(prefix + ChatColor.GREEN + "You are already logged in!");
-                return true;
-            }
-            
-            if (playerData == null) {
-                player.sendMessage(prefix + ChatColor.RED + "You are not registered! Please register with /register <password>.");
+                player.sendMessage(getPrefix() + ChatColor.GREEN + "You are already logged in!");
                 return true;
             }
 
-            if (args.length == 0) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /login <password>");
-                return true;
-            }
-            
-            String password = args[0];
-            String enteredPasswordHash = getSha256Hash(password);
-            
-            if (enteredPasswordHash == null) {
-                 player.sendMessage(prefix + ChatColor.RED + "Failed to hash your password. Please contact an admin.");
-                 return true;
-            }
-            
-            if (enteredPasswordHash.equals(playerData.passwordHash)) {
-                loggedInPlayers.add(playerUUID);
-                // Reset login attempts on successful login
-                playerData.loginAttempts = 0;
-                savePlayerData(player.getUniqueId());
-                player.sendMessage(prefix + ChatColor.GREEN + "You have successfully logged in!");
-                player.sendMessage(prefix + ChatColor.GREEN + "You can now use other commands.");
-                
-                // Teleport the player back to their original location
-                Location lastLocation = lastKnownLocations.get(playerUUID);
-                if (lastLocation != null) {
-                    player.teleport(lastLocation);
-                    lastKnownLocations.remove(playerUUID); // Clean up the map
-                }
-
-                // Cancel the timed login and kick tasks
-                BukkitTask task = loginTasks.remove(playerUUID);
-                if (task != null) {
-                    task.cancel();
-                }
-            } else {
-                playerData.loginAttempts++; // Increment attempt on incorrect password
-                savePlayerData(player.getUniqueId());
-                player.sendMessage(prefix + ChatColor.RED + "Incorrect password.");
-            }
-            
-            return true;
-        }
-    }
-
-    /**
-     * A generic command executor for /ban and /tempban.
-     * It checks if the player is logged in and has the required permission.
-     */
-    private class BanCommandExecutor implements CommandExecutor {
-        private final String commandName;
-
-        public BanCommandExecutor(String commandName) {
-            this.commandName = commandName;
-        }
-
-        @Override
-        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
-                return true;
-            }
-
-            Player player = (Player) sender;
-            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.helper")) {
-                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
-                return true;
-            }
-
-            if (args.length < 2) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /" + label + " <player> <reason>");
+            if (args.length != 1) {
+                player.sendMessage(getPrefix() + ChatColor.RED + "Usage: /login <password>");
                 return false;
             }
 
-            String targetName = args[0];
-            OfflinePlayer target = Bukkit.getOfflinePlayer(targetName);
-            if (target == null || target.getName() == null) {
-                player.sendMessage(prefix + ChatColor.RED + "Player '" + targetName + "' not found.");
+            PlayerData data = playerDataMap.get(playerUUID);
+            if (data == null) {
+                player.sendMessage(getPrefix() + ChatColor.RED + "You are not registered. Please use /register to create an account.");
                 return true;
             }
 
-            String reason = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-            PlayerData targetData = getPlayerData(target.getUniqueId());
+            String enteredPassword = args[0];
+            String enteredPasswordHash = hashPassword(enteredPassword);
 
-            if (commandName.equalsIgnoreCase("ban")) {
-                targetData.ban = -1;
-                targetData.startBans = dateFormat.format(new Date());
-                Bukkit.getBanList(org.bukkit.BanList.Type.NAME).addBan(targetName, reason, null, player.getName());
-                Bukkit.broadcastMessage(prefix + ChatColor.RED + targetName + ChatColor.YELLOW + " has been banned by " + ChatColor.GREEN + player.getName() + ChatColor.YELLOW + " for " + ChatColor.RED + reason + ChatColor.YELLOW + ".");
-                if (target.isOnline()) {
-                    ((Player) target).kickPlayer(ChatColor.RED + "You have been banned.\nReason: " + reason);
+            if (enteredPasswordHash != null && enteredPasswordHash.equals(data.getPasswordHash())) {
+                setLoggedIn(playerUUID);
+                data.setLoginAttempts(0);
+                savePlayerData(playerUUID);
+                player.sendMessage(getPrefix() + ChatColor.GREEN + "You have successfully logged in!");
+
+                // Cancel the scheduled kick task
+                if (loginTasks.containsKey(playerUUID)) {
+                    loginTasks.get(playerUUID).cancel();
+                    loginTasks.remove(playerUUID);
                 }
-            } else if (commandName.equalsIgnoreCase("tempban")) {
-                long durationMinutes = 3600;
-                targetData.ban = durationMinutes;
-                targetData.startBans = dateFormat.format(new Date());
-                Date expiry = new Date(System.currentTimeMillis() + durationMinutes * 60 * 1000);
-                Bukkit.getBanList(org.bukkit.BanList.Type.NAME).addBan(targetName, reason, expiry, player.getName());
-                Bukkit.broadcastMessage(prefix + ChatColor.RED + targetName + ChatColor.YELLOW + " has been temporarily banned by " + ChatColor.GREEN + player.getName() + ChatColor.YELLOW + " for " + ChatColor.RED + reason + ChatColor.YELLOW + ".");
-                if (target.isOnline()) {
-                    ((Player) target).kickPlayer(ChatColor.RED + "You have been temporarily banned.\nReason: " + reason);
+
+                // Teleport back to original location
+                if (playerLocations.containsKey(playerUUID)) {
+                    Location originalLocation = playerLocations.get(playerUUID);
+                    player.teleport(originalLocation);
+                    playerLocations.remove(playerUUID);
                 }
+
+            } else {
+                data.setLoginAttempts(data.getLoginAttempts() + 1);
+                savePlayerData(playerUUID);
+                
+                int attempts = (int) data.getLoginAttempts();
+                if (attempts >= 5) {
+                    // Kick player and apply bans for repeated failed attempts
+                    player.kickPlayer(ChatColor.RED + "Too many failed login attempts. Please try again later.");
+                    if (attempts == 5) {
+                        data.setBans(5);
+                        data.setStartBans(System.currentTimeMillis());
+                    } else if (attempts == 6) {
+                        data.setBans(24 * 60);
+                        data.setStartBans(System.currentTimeMillis());
+                    } else if (attempts > 6) {
+                        data.setBans(-1); // Permanent ban
+                        data.setStartBans(System.currentTimeMillis());
+                    }
+                    savePlayerData(playerUUID);
+                }
+                player.sendMessage(getPrefix() + ChatColor.RED + "Incorrect password. Attempt " + attempts + " of 5.");
             }
-            savePlayerData(target.getUniqueId());
             return true;
         }
     }
+
+    // Register command
+    private class RegisterCommandExecutor implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Only players can use this command.");
+                return true;
+            }
     
-    /**
-     * Handles the /unban command.
-     */
+            Player player = (Player) sender;
+            UUID playerUUID = player.getUniqueId();
+    
+            if (playerDataMap.containsKey(playerUUID) && playerDataMap.get(playerUUID).getPasswordHash() != null) {
+                player.sendMessage(getPrefix() + ChatColor.RED + "You are already registered!");
+                return true;
+            }
+    
+            if (args.length < 2) {
+                player.sendMessage(getPrefix() + ChatColor.RED + "Usage: /register <password> <confirm_password>");
+                return false;
+            }
+    
+            String password = args[0];
+            String confirmPassword = args[1];
+    
+            if (!password.equals(confirmPassword)) {
+                player.sendMessage(getPrefix() + ChatColor.RED + "Passwords do not match. Please try again.");
+                return true;
+            }
+    
+            String hashedPassword = hashPassword(password);
+            if (hashedPassword == null) {
+                player.sendMessage(getPrefix() + ChatColor.RED + "There was an error processing your password. Please try again.");
+                return true;
+            }
+    
+            PlayerData newData = new PlayerData(player.getName(), hashedPassword, 0, 0, 0, 0, 0, 0, 0);
+            playerDataMap.put(playerUUID, newData);
+            savePlayerData(playerUUID);
+            setLoggedIn(playerUUID);
+    
+            player.sendMessage(getPrefix() + ChatColor.GREEN + "Account created and logged in successfully!");
+            
+            // Cancel the scheduled kick task
+            if (loginTasks.containsKey(playerUUID)) {
+                loginTasks.get(playerUUID).cancel();
+                loginTasks.remove(playerUUID);
+            }
+    
+            // Teleport back to original location
+            if (playerLocations.containsKey(playerUUID)) {
+                Location originalLocation = playerLocations.get(playerUUID);
+                player.teleport(originalLocation);
+                playerLocations.remove(playerUUID);
+            }
+            return true;
+        }
+    }
+
+    // Ban command
+    private class BanCommandExecutor implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (args.length < 2) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /ban <player> <reason>");
+                return false;
+            }
+
+            Player target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
+                return true;
+            }
+
+            UUID targetUUID = target.getUniqueId();
+            PlayerData targetData = playerDataMap.get(targetUUID);
+            if (targetData == null) {
+                targetData = new PlayerData(target.getName(), null, 0, 0, 0, 0, 0, 0, 0);
+                playerDataMap.put(targetUUID, targetData);
+            }
+
+            StringBuilder reasonBuilder = new StringBuilder();
+            for (int i = 1; i < args.length; i++) {
+                reasonBuilder.append(args[i]).append(" ");
+            }
+            String reason = reasonBuilder.toString().trim();
+
+            targetData.setBans(-1);
+            targetData.setStartBans(System.currentTimeMillis());
+            savePlayerData(targetUUID);
+
+            Bukkit.getBanList(org.bukkit.BanList.Type.NAME).addBan(target.getName(), reason, null, sender.getName());
+            target.kickPlayer(getPrefix() + ChatColor.RED + "You have been permanently banned from the server for: " + ChatColor.YELLOW + reason);
+            Bukkit.broadcastMessage(getPrefix() + ChatColor.RED + target.getName() + " has been permanently banned by " + sender.getName() + " for: " + ChatColor.YELLOW + reason);
+            
+            return true;
+        }
+    }
+
+    // Unban command
     private class UnbanCommandExecutor implements CommandExecutor {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
-                return true;
-            }
-
-            Player player = (Player) sender;
-            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.helper")) {
-                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
-                return true;
-            }
-
-            if (args.length < 2) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /unban <player> <reason>");
+            if (args.length < 1) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /unban <player>");
                 return false;
             }
 
-            String targetName = args[0];
-            String reason = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-            
-            BanEntry banEntry = Bukkit.getBanList(org.bukkit.BanList.Type.NAME).getBanEntry(targetName);
-            if (banEntry != null) {
-                Bukkit.getBanList(org.bukkit.BanList.Type.NAME).pardon(targetName);
-                sender.sendMessage(prefix + ChatColor.GREEN + "Player " + ChatColor.YELLOW + targetName + ChatColor.GREEN + " has been unbanned. Reason: " + ChatColor.WHITE + reason);
-                Bukkit.broadcastMessage(prefix + ChatColor.GREEN + targetName + ChatColor.YELLOW + " has been unbanned by " + ChatColor.GREEN + player.getName() + ChatColor.YELLOW + " for " + ChatColor.RED + reason + ChatColor.YELLOW + ".");
-            } else {
-                sender.sendMessage(prefix + ChatColor.YELLOW + "Player " + targetName + " is not currently banned.");
+            Player target = Bukkit.getPlayerExact(args[0]);
+            UUID targetUUID;
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
+                return true;
             }
+            targetUUID = target.getUniqueId();
+
+            if (!playerDataMap.containsKey(targetUUID) || playerDataMap.get(targetUUID).getBans() == 0) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + args[0] + " is not currently banned by this plugin.");
+                return true;
+            }
+
+            playerDataMap.get(targetUUID).setBans(0);
+            playerDataMap.get(targetUUID).setStartBans(0);
+            savePlayerData(targetUUID);
+
+            Bukkit.getBanList(org.bukkit.BanList.Type.NAME).pardon(args[0]);
+            sender.sendMessage(getPrefix() + ChatColor.GREEN + args[0] + " has been unbanned.");
             return true;
         }
     }
+    
+    // Temporary ban command
+    private class TempBanCommandExecutor implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (args.length < 3) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /tempban <player> <duration_minutes> <reason>");
+                return false;
+            }
 
-    /**
-     * Handles the /kick command.
-     */
+            Player target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
+                return true;
+            }
+
+            UUID targetUUID = target.getUniqueId();
+            PlayerData targetData = playerDataMap.get(targetUUID);
+            if (targetData == null) {
+                targetData = new PlayerData(target.getName(), null, 0, 0, 0, 0, 0, 0, 0);
+                playerDataMap.put(targetUUID, targetData);
+            }
+
+            long duration;
+            try {
+                duration = Long.parseLong(args[1]);
+            } catch (NumberFormatException e) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Invalid duration. Please enter a number in minutes.");
+                return false;
+            }
+
+            StringBuilder reasonBuilder = new StringBuilder();
+            for (int i = 2; i < args.length; i++) {
+                reasonBuilder.append(args[i]).append(" ");
+            }
+            String reason = reasonBuilder.toString().trim();
+
+            targetData.setBans(duration);
+            targetData.setStartBans(System.currentTimeMillis());
+            savePlayerData(targetUUID);
+
+            Bukkit.getBanList(org.bukkit.BanList.Type.NAME).addBan(target.getName(), reason, new Date(System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(duration)), sender.getName());
+            target.kickPlayer(getPrefix() + ChatColor.RED + "You have been temporarily banned from the server for " + duration + " minutes for: " + ChatColor.YELLOW + reason);
+            Bukkit.broadcastMessage(getPrefix() + ChatColor.RED + target.getName() + " has been temporarily banned by " + sender.getName() + " for: " + ChatColor.YELLOW + reason);
+            
+            return true;
+        }
+    }
+    
+    // Kick command
     private class KickCommandExecutor implements CommandExecutor {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
-                return true;
-            }
-
-            Player player = (Player) sender;
-            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.helper")) {
-                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
-                return true;
-            }
-
             if (args.length < 2) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /kick <player> <reason>");
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /kick <player> <reason>");
                 return false;
             }
 
-            String targetName = args[0];
-            Player target = Bukkit.getPlayer(targetName);
+            Player target = Bukkit.getPlayerExact(args[0]);
             if (target == null) {
-                player.sendMessage(prefix + ChatColor.RED + "Player '" + targetName + "' not found.");
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
                 return true;
             }
 
-            String reason = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-
-            target.kickPlayer(ChatColor.RED + "You have been kicked.\nReason: " + reason);
-            Bukkit.broadcastMessage(prefix + ChatColor.RED + targetName + ChatColor.YELLOW + " has been kicked by " + ChatColor.GREEN + player.getName() + ChatColor.YELLOW + " for " + ChatColor.RED + reason + ChatColor.YELLOW + ".");
-
-            return true;
-        }
-    }
-
-    /**
-     * Handles the /mute and /unmute commands.
-     */
-    private class MuteCommandExecutor implements CommandExecutor {
-        private final String commandName;
-
-        public MuteCommandExecutor(String commandName) {
-            this.commandName = commandName;
-        }
-
-        @Override
-        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
-                return true;
+            StringBuilder reasonBuilder = new StringBuilder();
+            for (int i = 1; i < args.length; i++) {
+                reasonBuilder.append(args[i]).append(" ");
             }
+            String reason = reasonBuilder.toString().trim();
 
-            Player player = (Player) sender;
-            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.helper")) {
-                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
-                return true;
-            }
-
-            if (args.length < 2) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /" + label + " <player> <reason>");
-                return false;
-            }
-
-            String targetName = args[0];
-            Player target = Bukkit.getPlayer(targetName);
-            if (target == null) {
-                player.sendMessage(prefix + ChatColor.RED + "Player '" + targetName + "' not found.");
-                return true;
-            }
+            target.kickPlayer(getPrefix() + ChatColor.RED + "You have been kicked from the server for: " + ChatColor.YELLOW + reason);
+            Bukkit.broadcastMessage(getPrefix() + ChatColor.RED + target.getName() + " has been kicked by " + sender.getName() + " for: " + ChatColor.YELLOW + reason);
             
-            String reason = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-            
-            PlayerData targetData = getPlayerData(target.getUniqueId());
-
-            if (commandName.equalsIgnoreCase("mute")) {
-                if (targetData.isMuted()) {
-                    player.sendMessage(prefix + ChatColor.RED + targetName + " is already muted.");
-                } else {
-                    targetData.mutes = 12; // Mute for 12 minutes as an example
-                    targetData.startMutes = dateFormat.format(new Date());
-                    player.sendMessage(prefix + ChatColor.GREEN + "You have muted " + ChatColor.RED + targetName + ChatColor.GREEN + " for: " + ChatColor.YELLOW + reason + ".");
-                    target.sendMessage(prefix + ChatColor.RED + "You have been muted by a staff member and cannot chat. Reason: " + ChatColor.WHITE + reason);
-                }
-            } else if (commandName.equalsIgnoreCase("unmute")) {
-                if (!targetData.isMuted()) {
-                    player.sendMessage(prefix + ChatColor.RED + targetName + " is not muted.");
-                } else {
-                    targetData.mutes = 0;
-                    targetData.startMutes = "";
-                    player.sendMessage(prefix + ChatColor.GREEN + "You have unmuted " + ChatColor.RED + targetName + ChatColor.GREEN + ". Reason: " + ChatColor.YELLOW + reason + ".");
-                    target.sendMessage(prefix + ChatColor.GREEN + "You have been unmuted and can now chat. Reason: " + ChatColor.WHITE + reason);
-                }
-            }
-            savePlayerData(target.getUniqueId());
             return true;
         }
     }
     
-    /**
-     * Handles the /warn command.
-     */
+    // Mute command
+    private class MuteCommandExecutor implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (args.length < 2) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /mute <player> <reason>");
+                return false;
+            }
+
+            Player target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
+                return true;
+            }
+
+            UUID targetUUID = target.getUniqueId();
+            PlayerData targetData = playerDataMap.get(targetUUID);
+            if (targetData == null) {
+                targetData = new PlayerData(target.getName(), null, 0, 0, 0, 0, 0, 0, 0);
+                playerDataMap.put(targetUUID, targetData);
+            }
+
+            StringBuilder reasonBuilder = new StringBuilder();
+            for (int i = 1; i < args.length; i++) {
+                reasonBuilder.append(args[i]).append(" ");
+            }
+            String reason = reasonBuilder.toString().trim();
+
+            if (isMuted(targetUUID)) {
+                sender.sendMessage(getPrefix() + ChatColor.YELLOW + target.getName() + " is already muted.");
+                return true;
+            }
+
+            targetData.setMutes(-1); // Permanent mute
+            targetData.setStartMutes(System.currentTimeMillis());
+            savePlayerData(targetUUID);
+
+            target.sendMessage(getPrefix() + ChatColor.RED + "You have been muted by " + sender.getName() + " for: " + ChatColor.YELLOW + reason);
+            sender.sendMessage(getPrefix() + ChatColor.GREEN + target.getName() + " has been permanently muted.");
+            Bukkit.broadcastMessage(getPrefix() + ChatColor.RED + target.getName() + " has been permanently muted by " + sender.getName() + " for: " + ChatColor.YELLOW + reason);
+            
+            return true;
+        }
+    }
+
+    // Unmute command
+    private class UnMuteCommandExecutor implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (args.length < 1) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /unmute <player>");
+                return false;
+            }
+
+            Player target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
+                return true;
+            }
+
+            UUID targetUUID = target.getUniqueId();
+            
+            if (!playerDataMap.containsKey(targetUUID) || playerDataMap.get(targetUUID).getMutes() == 0) {
+                sender.sendMessage(getPrefix() + ChatColor.YELLOW + target.getName() + " is not currently muted.");
+                return true;
+            }
+
+            playerDataMap.get(targetUUID).setMutes(0);
+            playerDataMap.get(targetUUID).setStartMutes(0);
+            savePlayerData(targetUUID);
+
+            target.sendMessage(getPrefix() + ChatColor.GREEN + "You have been unmuted by " + sender.getName() + ".");
+            sender.sendMessage(getPrefix() + ChatColor.GREEN + target.getName() + " has been unmuted.");
+            
+            return true;
+        }
+    }
+    
+    // Warn command
     private class WarnCommandExecutor implements CommandExecutor {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
-                return true;
-            }
-            
-            Player player = (Player) sender;
-            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.helper")) {
-                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
-                return true;
-            }
-            
             if (args.length < 2) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /warn <player> <reason>");
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /warn <player> <reason>");
                 return false;
             }
-            
-            String targetName = args[0];
-            Player target = Bukkit.getPlayer(targetName);
+
+            Player target = Bukkit.getPlayerExact(args[0]);
             if (target == null) {
-                player.sendMessage(prefix + ChatColor.RED + "Player '" + targetName + "' not found or is offline.");
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
                 return true;
             }
-            
-            String reason = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-            
-            PlayerData targetData = getPlayerData(target.getUniqueId());
-            targetData.warns++;
-            targetData.startWarns = dateFormat.format(new Date());
 
-            player.sendMessage(prefix + ChatColor.GREEN + "You have warned " + ChatColor.YELLOW + targetName + ChatColor.GREEN + " for: " + ChatColor.RED + reason);
-            target.sendMessage(prefix + ChatColor.RED + "You have been warned by a staff member. Total warnings: " + targetData.warns);
+            UUID targetUUID = target.getUniqueId();
+            PlayerData targetData = playerDataMap.get(targetUUID);
+            if (targetData == null) {
+                targetData = new PlayerData(target.getName(), null, 0, 0, 0, 0, 0, 0, 0);
+                playerDataMap.put(targetUUID, targetData);
+            }
+
+            StringBuilder reasonBuilder = new StringBuilder();
+            for (int i = 1; i < args.length; i++) {
+                reasonBuilder.append(args[i]).append(" ");
+            }
+            String reason = reasonBuilder.toString().trim();
+
+            targetData.setWarns(targetData.getWarns() + 1);
+            targetData.setStartWarns(System.currentTimeMillis());
+            savePlayerData(targetUUID);
+
+            target.sendMessage(getPrefix() + ChatColor.RED + "You have been warned by " + sender.getName() + " for: " + ChatColor.YELLOW + reason);
+            sender.sendMessage(getPrefix() + ChatColor.GREEN + target.getName() + " has been warned. They now have " + targetData.getWarns() + " warnings.");
             
-            savePlayerData(target.getUniqueId());
             return true;
         }
     }
     
-    /**
-     * Handles the /unwarn command.
-     */
+    // Unwarn command
     private class UnwarnCommandExecutor implements CommandExecutor {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
-                return true;
-            }
-            
-            Player player = (Player) sender;
-            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.helper")) {
-                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
-                return true;
-            }
-            
-            if (args.length < 2) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /unwarn <player> <reason>");
+            if (args.length < 1) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /unwarn <player>");
                 return false;
             }
-            
-            String targetName = args[0];
-            OfflinePlayer target = Bukkit.getOfflinePlayer(targetName);
-            if (target == null || target.getName() == null) {
-                player.sendMessage(prefix + ChatColor.RED + "Player '" + targetName + "' not found.");
+
+            Player target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
                 return true;
             }
-            
-            PlayerData targetData = playersData.get(target.getUniqueId());
-            if (targetData == null) {
-                player.sendMessage(prefix + ChatColor.YELLOW + "No data found for player " + targetName + ".");
+
+            UUID targetUUID = target.getUniqueId();
+            PlayerData targetData = playerDataMap.get(targetUUID);
+
+            if (targetData == null || targetData.getWarns() == 0) {
+                sender.sendMessage(getPrefix() + ChatColor.YELLOW + target.getName() + " has no warnings to remove.");
                 return true;
             }
-            
-            if (targetData.warns > 0) {
-                targetData.warns--;
-                String reason = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-                player.sendMessage(prefix + ChatColor.GREEN + "You have unwarned " + ChatColor.YELLOW + targetName + ChatColor.GREEN + ". New warnings count: " + targetData.warns + ". Reason: " + ChatColor.RED + reason);
-                if (target.isOnline()) {
-                     ((Player) target).sendMessage(prefix + ChatColor.GREEN + "A staff member has removed one of your warnings. New total warnings: " + targetData.warns);
-                }
-                savePlayerData(target.getUniqueId());
-            } else {
-                player.sendMessage(prefix + ChatColor.YELLOW + targetName + " has no warnings to remove.");
-            }
+
+            targetData.setWarns(targetData.getWarns() - 1);
+            savePlayerData(targetUUID);
+
+            sender.sendMessage(getPrefix() + ChatColor.GREEN + "Warning removed from " + target.getName() + ". They now have " + targetData.getWarns() + " warnings.");
+            target.sendMessage(getPrefix() + ChatColor.GREEN + "A warning has been removed from your record.");
             
             return true;
         }
     }
-    
-    /**
-     * Handles /checkwarn, /checkban, and /checkmute commands.
-     */
-    private class CheckCommandExecutor implements CommandExecutor {
-        private final String commandName;
 
-        public CheckCommandExecutor(String commandName) {
-            this.commandName = commandName;
-        }
-        
+    // Checkwarn command
+    private class CheckWarnCommandExecutor implements CommandExecutor {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
-                return true;
-            }
-            
-            Player player = (Player) sender;
-            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.helper")) {
-                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
-                return true;
-            }
-            
             if (args.length < 1) {
-                player.sendMessage(prefix + ChatColor.RED + "Usage: /" + label + " <player>");
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /checkwarn <player>");
                 return false;
             }
 
-            String targetName = args[0];
-            OfflinePlayer target = Bukkit.getOfflinePlayer(targetName);
-            if (target == null || target.getName() == null) {
-                player.sendMessage(prefix + ChatColor.RED + "Player '" + targetName + "' not found.");
+            Player target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
                 return true;
             }
-            
-            PlayerData targetData = playersData.get(target.getUniqueId());
+
+            UUID targetUUID = target.getUniqueId();
+            PlayerData targetData = playerDataMap.get(targetUUID);
+
             if (targetData == null) {
-                player.sendMessage(prefix + ChatColor.YELLOW + "No data found for player " + targetName + ".");
-                return true;
-            }
-            
-            switch (commandName.toLowerCase()) {
-                case "warn":
-                    player.sendMessage(prefix + ChatColor.YELLOW + "Warnings for " + targetName + ": " + ChatColor.WHITE + targetData.warns);
-                    if (targetData.warns > 0) {
-                        player.sendMessage(ChatColor.YELLOW + "Last warned on: " + ChatColor.WHITE + targetData.startWarns);
-                    }
-                    break;
-                case "ban":
-                    BanEntry banEntry = Bukkit.getBanList(org.bukkit.BanList.Type.NAME).getBanEntry(target.getName());
-                    if (banEntry != null) {
-                        player.sendMessage(prefix + ChatColor.RED + targetName + " is banned.");
-                        player.sendMessage(ChatColor.YELLOW + "Reason: " + ChatColor.WHITE + banEntry.getReason());
-                        player.sendMessage(ChatColor.YELLOW + "Source: " + ChatColor.WHITE + banEntry.getSource());
-                        if (banEntry.getExpiration() != null) {
-                            player.sendMessage(ChatColor.YELLOW + "Expires: " + ChatColor.WHITE + banEntry.getExpiration());
-                        } else {
-                            player.sendMessage(ChatColor.YELLOW + "Expires: " + ChatColor.WHITE + "Never (permanent)");
-                        }
-                    } else {
-                        player.sendMessage(prefix + ChatColor.GREEN + targetName + " is not banned.");
-                    }
-                    break;
-                case "mute":
-                    if (targetData.isMuted()) {
-                        player.sendMessage(prefix + ChatColor.RED + targetName + " is currently muted.");
-                        player.sendMessage(ChatColor.YELLOW + "Mute started at: " + ChatColor.WHITE + targetData.startMutes);
-                        if (targetData.mutes > 0) {
-                             player.sendMessage(ChatColor.YELLOW + "Mute duration: " + ChatColor.WHITE + targetData.mutes + " minutes");
-                        }
-                    } else {
-                        player.sendMessage(prefix + ChatColor.GREEN + targetName + " is not muted.");
-                    }
-                    break;
+                sender.sendMessage(getPrefix() + ChatColor.GREEN + target.getName() + " has no warnings.");
+            } else {
+                sender.sendMessage(getPrefix() + ChatColor.GREEN + target.getName() + " has " + targetData.getWarns() + " warning(s).");
             }
             return true;
         }
     }
-    
-    /**
-     * Handles the /setlogin command, which sets the login location to the player's current location.
-     */
+
+    // Checkban command
+    private class CheckBanCommandExecutor implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (args.length < 1) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /checkban <player>");
+                return false;
+            }
+
+            Player target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
+                return true;
+            }
+
+            UUID targetUUID = target.getUniqueId();
+            if (isBanned(targetUUID)) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + target.getName() + " is currently banned.");
+            } else {
+                sender.sendMessage(getPrefix() + ChatColor.GREEN + target.getName() + " is not currently banned.");
+            }
+            return true;
+        }
+    }
+
+    // Checkmute command
+    private class CheckMuteCommandExecutor implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (args.length < 1) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Usage: /checkmute <player>");
+                return false;
+            }
+
+            Player target = Bukkit.getPlayerExact(args[0]);
+            if (target == null) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Player not found.");
+                return true;
+            }
+
+            UUID targetUUID = target.getUniqueId();
+            if (isMuted(targetUUID)) {
+                sender.sendMessage(getPrefix() + ChatColor.RED + target.getName() + " is currently muted.");
+            } else {
+                sender.sendMessage(getPrefix() + ChatColor.GREEN + target.getName() + " is not currently muted.");
+            }
+            return true;
+        }
+    }
+
+    // Setlogin command
     private class SetLoginCommandExecutor implements CommandExecutor {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
             if (!(sender instanceof Player)) {
-                sender.sendMessage(prefix + ChatColor.RED + "Only players can use this command.");
+                sender.sendMessage(getPrefix() + ChatColor.RED + "Only players can use this command.");
                 return true;
             }
-
+            
             Player player = (Player) sender;
-            // Check for a specific permission, e.g., utility.admin
-            if (!isLoggedIn(player.getUniqueId()) || !player.hasPermission("utility.setlogin")) {
-                player.sendMessage(prefix + ChatColor.RED + "You do not have permission to use this command.");
-                return true;
-            }
-            
-            Location location = player.getLocation();
-            
-            // Save the location details to the config file
-            getConfig().set("login-spawn.world", location.getWorld().getName());
-            getConfig().set("login-spawn.x", location.getX());
-            getConfig().set("login-spawn.y", location.getY());
-            getConfig().set("login-spawn.z", location.getZ());
-            getConfig().set("login-spawn.yaw", location.getYaw());
-            getConfig().set("login-spawn.pitch", location.getPitch());
-            
+            getConfig().set("login_spawn", player.getLocation());
             saveConfig();
-            
-            player.sendMessage(prefix + ChatColor.GREEN + "Login spawn location has been set to your current position.");
-            player.sendMessage(prefix + ChatColor.GRAY + "World: " + location.getWorld().getName());
-            player.sendMessage(prefix + ChatColor.GRAY + "Coordinates: x=" + (int)location.getX() + ", y=" + (int)location.getY() + ", z=" + (int)location.getZ());
-            
+            player.sendMessage(getPrefix() + ChatColor.GREEN + "Login spawn location has been set to your current location!");
             return true;
         }
+    }
+    
+    // Gets the configured login spawn location
+    private Location getLoginSpawnLocation() {
+        if (getConfig().contains("login_spawn")) {
+            return getConfig().getLocation("login_spawn");
+        }
+        return Bukkit.getWorlds().get(0).getSpawnLocation();
     }
 }
